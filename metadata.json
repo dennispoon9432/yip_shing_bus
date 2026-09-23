@@ -1,0 +1,6 @@
+{
+  "name": "九巴業成街實時到站 | KMB Yip Shing St ETA",
+  "description": "香港九巴業成街巴士站實時到站時間查詢（往九龍及往荃灣方向），按抵達時間即時排序。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
