@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { YIP_SHING_STOPS, ProcessedEta } from './types';
 import { fetchStopEtas, processEtas } from './services/kmbApi';
 import { CompactBusRow } from './components/CompactBusRow';
@@ -17,6 +17,7 @@ import {
   X,
   Sparkles,
   Lock,
+  Sun,
 } from 'lucide-react';
 
 const AUTO_REFRESH_INTERVAL = 20; // seconds
@@ -43,6 +44,92 @@ export default function App() {
 
   // Robust locked bus state: keeps tracking the exact bus even when ETA timestamp shifts
   const [lockedBus, setLockedBus] = useState<LockedBusInfo | null>(null);
+
+  // Screen Keep-On (Wake Lock) feature
+  const [wakeLockActive, setWakeLockActive] = useState<boolean>(false);
+  const [wakeLockNotice, setWakeLockNotice] = useState<string | null>(null);
+  const wakeLockSentinelRef = useRef<any>(null);
+  const userWantsWakeLockRef = useRef<boolean>(false);
+
+  const showWakeNotice = (msg: string) => {
+    setWakeLockNotice(msg);
+    setTimeout(() => {
+      setWakeLockNotice((current) => (current === msg ? null : current));
+    }, 2500);
+  };
+
+  const requestWakeLock = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
+      showWakeNotice('此裝置/瀏覽器未支援螢幕常亮功能');
+      return false;
+    }
+
+    try {
+      // Release existing if any
+      if (wakeLockSentinelRef.current) {
+        try {
+          await wakeLockSentinelRef.current.release();
+        } catch (_) {}
+      }
+
+      const sentinel = await (navigator as any).wakeLock.request('screen');
+      wakeLockSentinelRef.current = sentinel;
+      setWakeLockActive(true);
+      showWakeNotice('已開啟螢幕常亮（防止螢幕休眠）');
+
+      sentinel.addEventListener('release', () => {
+        wakeLockSentinelRef.current = null;
+        // If release was caused by system (e.g. backgrounding), keep user preference intact
+        if (!userWantsWakeLockRef.current) {
+          setWakeLockActive(false);
+        }
+      });
+      return true;
+    } catch (err: any) {
+      console.warn('Wake Lock request failed:', err);
+      setWakeLockActive(false);
+      showWakeNotice('未能啟用常亮（可能因電量不足或權限限制）');
+      return false;
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    userWantsWakeLockRef.current = false;
+    if (wakeLockSentinelRef.current) {
+      try {
+        await wakeLockSentinelRef.current.release();
+      } catch (_) {}
+      wakeLockSentinelRef.current = null;
+    }
+    setWakeLockActive(false);
+    showWakeNotice('已關閉螢幕常亮');
+  }, []);
+
+  const toggleWakeLock = useCallback(async () => {
+    if (wakeLockActive) {
+      await releaseWakeLock();
+    } else {
+      userWantsWakeLockRef.current = true;
+      await requestWakeLock();
+    }
+  }, [wakeLockActive, releaseWakeLock, requestWakeLock]);
+
+  // Re-acquire lock when returning to tab/app if user enabled it
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (userWantsWakeLockRef.current && document.visibilityState === 'visible') {
+        await requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (wakeLockSentinelRef.current) {
+        wakeLockSentinelRef.current.release().catch(() => {});
+      }
+    };
+  }, [requestWakeLock]);
 
   // Fetch both directions simultaneously
   const loadData = useCallback(async (isManual: boolean = false) => {
@@ -239,17 +326,38 @@ export default function App() {
               </span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <div className="flex items-center gap-1 text-[11px] font-mono text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
                 <Clock className="w-3 h-3 text-slate-400" />
                 <span>{formatHkTime(currentTime)}</span>
                 <span className="text-slate-500 ml-1">({remainingSeconds}s)</span>
               </div>
 
+              {/* Screen Keep-On Button */}
+              <button
+                type="button"
+                onClick={toggleWakeLock}
+                className={`p-1 sm:px-2 py-0.5 rounded border transition cursor-pointer flex items-center gap-1 text-xs font-semibold ${
+                  wakeLockActive
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-xs ring-1 ring-amber-500/30'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                }`}
+                title={wakeLockActive ? '螢幕常亮已開啟（點擊關閉）' : '保持螢幕常亮（防休眠）'}
+              >
+                <Sun
+                  className={`w-3.5 h-3.5 ${
+                    wakeLockActive ? 'text-amber-400 fill-amber-400 animate-pulse' : 'text-slate-400'
+                  }`}
+                />
+                <span className="text-[11px]">
+                  {wakeLockActive ? '常亮中' : '常亮'}
+                </span>
+              </button>
+
               <button
                 onClick={() => loadData(true)}
                 disabled={isRefreshing}
-                className="p-1 sm:px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer flex items-center gap-1 disabled:opacity-50 text-xs"
+                className="p-1 sm:px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer flex items-center gap-1 disabled:opacity-50 text-xs"
                 title="立即更新"
               >
                 <RefreshCw
@@ -259,6 +367,14 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Wake Lock Status Notification Toast */}
+          {wakeLockNotice && (
+            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-amber-300 text-xs px-3.5 py-1.5 rounded-full border border-amber-500/40 shadow-2xl backdrop-blur-md flex items-center gap-2">
+              <Sun className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+              <span>{wakeLockNotice}</span>
+            </div>
+          )}
 
           {/* Dedicated Estimated Arrival Time Banner with MAXIMIZED TIME & MINUTES */}
           {activeDisplayBus && (
